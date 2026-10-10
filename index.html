@@ -533,6 +533,7 @@
         <button class="btn-ghost btn-sm" id="disconnectBtn" type="button">Disconnect</button>
       </div>
 
+      <div class="banner warn" id="scopeWarn" hidden></div>
       <div class="banner err" id="connectErr" hidden></div>
     </section>
 
@@ -628,12 +629,14 @@
       <h3 id="delTitle">Delete this site?</h3>
       <p>This permanently deletes the repository <b id="delRepoName">—</b> from your GitHub account — every file and its GitHub Pages site go with it. <b>This can't be undone.</b></p>
       <div class="banner warn" id="delSelfWarn" hidden>Careful: this is the repo hosting this app. Deleting it takes rawdev Drop itself offline.</div>
+      <div class="banner warn" id="delScopeWarn" hidden></div>
       <label for="delConfirmInput">Type <code id="delRepoCode">—</code> to confirm</label>
       <input id="delConfirmInput" type="text" autocomplete="off" spellcheck="false" placeholder="repo name" />
       <div class="row" style="justify-content:flex-end; margin-top:16px;">
         <button class="btn-ghost" id="delCancel" type="button">Cancel</button>
         <button class="btn-danger" id="delGo" type="button" disabled>Delete forever</button>
       </div>
+      <p style="margin:12px 0 0; font-size:12.5px; color:var(--muted);">Still stuck? <a class="link" id="delManualLink" href="#" target="_blank" rel="noopener noreferrer">Open the repo on GitHub ↗</a> and delete it from Settings.</p>
       <div class="banner err" id="delErr" hidden></div>
     </div>
   </div>
@@ -649,8 +652,9 @@
   var LS_REPO = "rawdev_drop_repo";
   var LS_HISTORY = "rawdev_drop_history";
   var LS_THEME = "rawdev_drop_theme";
+  var LS_DELETED = "rawdev_drop_deleted";
 
-  var state = { token: "", login: "", avatar: "", files: [], publishing: false, editRepo: null, sites: [] };
+  var state = { token: "", login: "", avatar: "", files: [], publishing: false, editRepo: null, sites: [], scopes: null };
 
   var $ = function (id) { return document.getElementById(id); };
 
@@ -714,6 +718,10 @@
       headers: headers,
       body: opts.body
     }).then(function (res) {
+      try {
+        var sc = res.headers.get("x-oauth-scopes");
+        if (sc !== null && sc !== undefined) state.scopes = sc;
+      } catch (e) {}
       return res.text().then(function (txt) {
         var data = null;
         try { data = txt ? JSON.parse(txt) : null; } catch (e) { data = txt; }
@@ -763,6 +771,7 @@
 
     updateUrlPreview();
     updatePublishEnabled();
+    updateScopeWarn();
     fetchSites();
   }
 
@@ -777,6 +786,7 @@
     chip.innerHTML = '<span class="d"></span> Not connected';
     updateUrlPreview();
     updatePublishEnabled();
+    var sw = $("scopeWarn"); if (sw) sw.hidden = true;
     state.sites = [];
     renderSites(loadHistory());
   }
@@ -891,7 +901,45 @@
   function saveHistory(list) {
     try { localStorage.setItem(LS_HISTORY, JSON.stringify(list.slice(0, 200))); } catch (e) {}
   }
+  function hasScope(name) {
+    if (state.scopes === null || state.scopes === undefined) return null;
+    if (!state.scopes) return false;
+    return state.scopes.split(",").map(function (s) { return s.trim(); }).indexOf(name) !== -1;
+  }
+
+  function loadDeleted() { try { return JSON.parse(localStorage.getItem(LS_DELETED) || "[]"); } catch (e) { return []; } }
+  function saveDeleted(l) { try { localStorage.setItem(LS_DELETED, JSON.stringify(l.slice(-100))); } catch (e) {} }
+  function markDeleted(repo) {
+    var l = loadDeleted().filter(function (x) { return String(x.repo || "").toLowerCase() !== repo.toLowerCase(); });
+    l.push({ repo: repo, at: Date.now() });
+    saveDeleted(l);
+  }
+  function unmarkDeleted(repo) {
+    saveDeleted(loadDeleted().filter(function (x) { return String(x.repo || "").toLowerCase() !== repo.toLowerCase(); }));
+  }
+  // hide a repo we just deleted even if GitHub's list still returns it for a moment
+  function isGone(repo, updatedAt) {
+    var rec = null;
+    loadDeleted().forEach(function (x) { if (String(x.repo || "").toLowerCase() === repo.toLowerCase()) rec = x; });
+    if (!rec) return false;
+    if (!updatedAt) return true;
+    return new Date(updatedAt).getTime() <= rec.at + 10000;
+  }
+
+  function updateScopeWarn() {
+    var el = $("scopeWarn");
+    if (!el) return;
+    if (state.login && hasScope("delete_repo") === false) {
+      el.innerHTML = 'Your token has no <code>delete_repo</code> scope, so the <b>delete</b> button will fail. ' +
+        '<a class="link" href="https://github.com/settings/tokens/new?scopes=repo,delete_repo&description=rawdev%20Drop" target="_blank" rel="noopener noreferrer">Create a new token with it ↗</a>, then Disconnect and reconnect.';
+      el.hidden = false;
+    } else {
+      el.hidden = true;
+    }
+  }
+
   function upsertHistory(entry) {
+    unmarkDeleted(entry.repo);
     var list = loadHistory();
     var i = -1;
     for (var k = 0; k < list.length; k++) {
@@ -912,7 +960,7 @@
     if (st) st.textContent = "Loading…";
     $("sitesErr").hidden = true;
     gh("/user/repos?per_page=100&sort=updated&affiliation=owner").then(function (repos) {
-      var remote = (repos || []).filter(function (r) { return r.has_pages; }).map(function (r) {
+      var remote = (repos || []).filter(function (r) { return r.has_pages && !isGone(r.name, r.updated_at); }).map(function (r) {
         return { repo: r.name, owner: r.owner.login, url: pagesUrl(r.owner.login, r.name), updated_at: r.updated_at };
       });
       var map = {};
@@ -1004,6 +1052,15 @@
     $("delRepoName").textContent = repo;
     $("delRepoCode").textContent = repo;
     $("delSelfWarn").hidden = !isSelf;
+    var ml = $("delManualLink");
+    if (ml) ml.href = "https://github.com/" + state.login + "/" + repo + "/settings";
+    var dsw = $("delScopeWarn");
+    if (dsw) {
+      if (hasScope("delete_repo") === false) {
+        dsw.innerHTML = "Your token can't delete repositories (no <code>delete_repo</code> scope). Create a new token with it and reconnect — or delete manually on GitHub below.";
+        dsw.hidden = false;
+      } else { dsw.hidden = true; }
+    }
     $("delConfirmInput").value = "";
     $("delGo").disabled = true;
     $("delGo").textContent = "Delete forever";
@@ -1025,6 +1082,9 @@
     $("delErr").hidden = true;
     gh("/repos/" + state.login + "/" + repo, { method: "DELETE" }).then(function () {
       removeFromHistory(repo);
+      markDeleted(repo);
+      state.sites = (state.sites || []).filter(function (x) { return String(x.repo || "").toLowerCase() !== repo.toLowerCase(); });
+      renderSites(state.sites);
       closeDelete();
       toast("Deleted " + repo + " from GitHub");
       fetchSites();
