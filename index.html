@@ -237,6 +237,43 @@
   .chip .d{ width:7px; height:7px; border-radius:50%; background:#C2C7D6; }
   .chip.ok .d{ background:var(--ok); }
 
+  /* ---------- your sites / history ---------- */
+  .sites{ list-style:none; margin:0; padding:0; display:grid; gap:9px; }
+  .sites li.empty{ color:var(--faint); font-size:13.5px; padding:16px; text-align:center; border:1px dashed var(--line-strong); border-radius:var(--r-sm); }
+  .site{
+    display:flex; align-items:center; gap:12px;
+    border:1px solid var(--line); border-radius:var(--r-sm);
+    padding:11px 12px; background:#fff; animation:rise .35s ease both;
+    transition:border-color .15s, box-shadow .15s;
+  }
+  .site:hover{ border-color:#CFD4E4; box-shadow:var(--shadow-sm); }
+  .site .sico{
+    width:36px; height:36px; flex:0 0 auto; border-radius:10px; display:grid; place-items:center;
+    color:var(--accent); background:var(--accent-soft); border:1px solid #DCDEFB;
+  }
+  .site .sico svg{ width:18px; height:18px; }
+  .site .smeta{ min-width:0; flex:1; }
+  .site .smeta b{ display:block; font-size:14px; font-weight:700; letter-spacing:-.01em; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .site .smeta a{ font-size:12.5px; color:var(--faint); text-decoration:none; display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .site .smeta a:hover{ color:var(--accent); text-decoration:underline; }
+  .site .sacts{ display:flex; gap:6px; flex:0 0 auto; }
+  .iconbtn{
+    width:34px; height:34px; padding:0; display:grid; place-items:center;
+    border:1px solid var(--line-strong); background:#fff; color:var(--muted); border-radius:9px;
+  }
+  .iconbtn:hover{ border-color:var(--accent); color:var(--accent); background:#F8F8FF; }
+  .iconbtn svg{ width:16px; height:16px; }
+  .iconbtn.edit:hover{ border-color:transparent; color:#fff; background:linear-gradient(135deg,var(--accent),var(--accent-2)); }
+  .editbar{
+    display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+    background:var(--accent-soft); border:1px solid #DCDEFB; color:#3730A3;
+    border-radius:var(--r-sm); padding:10px 13px; font-size:13.5px; margin-bottom:14px;
+  }
+  .editbar b{ font-weight:700; }
+  .editbar button{ margin-left:auto; }
+  input:disabled{ background:#F1F2F7; color:var(--faint); cursor:not-allowed; }
+  @media (max-width:520px){ .site .smeta a{ display:none; } }
+
   footer{ text-align:center; color:var(--faint); font-size:12.5px; padding:0 20px 40px; }
   footer b{ color:var(--muted); }
 
@@ -343,11 +380,16 @@
     </section>
 
     <!-- STEP 3 -->
-    <section class="card">
+    <section class="card" id="step3">
       <div class="stephead">
         <span class="num">3</span>
-        <h2>Publish</h2>
+        <h2 id="step3Title">Publish</h2>
         <span class="status" id="step3Status">Ready</span>
+      </div>
+
+      <div class="editbar" id="editBar" hidden>
+        <span>✏️ Editing <b id="editRepoName">—</b> — the link stays the same.</span>
+        <button class="btn-ghost btn-sm" id="cancelEditBtn" type="button">Cancel</button>
       </div>
 
       <label for="repoInput">Site name (becomes your repository)</label>
@@ -362,8 +404,8 @@
       <ul class="log" id="log"></ul>
 
       <div class="result" id="result" hidden>
-        <h3>🎉 Your site is live</h3>
-        <p>GitHub Pages usually takes about a minute to go live the first time. Share this link anywhere.</p>
+        <h3 id="resultTitle">🎉 Your site is live</h3>
+        <p id="resultMsg">GitHub Pages usually takes about a minute to go live the first time. Share this link anywhere.</p>
         <div class="urlrow">
           <input id="resultUrl" type="text" readonly />
           <button class="btn-ghost" id="copyUrlBtn" type="button">Copy link</button>
@@ -373,6 +415,19 @@
       </div>
 
       <div class="banner err" id="publishErr" hidden></div>
+    </section>
+
+    <!-- YOUR SITES / HISTORY -->
+    <section class="card" id="sitesCard">
+      <div class="stephead">
+        <span class="num">★</span>
+        <h2>Your sites</h2>
+        <span class="status" id="sitesStatus"></span>
+        <button class="btn-ghost btn-sm" id="refreshSitesBtn" type="button">Refresh</button>
+      </div>
+      <p class="hint" style="margin:-8px 0 14px;">Every website you've published to GitHub Pages. Hit the <b>pencil</b> to swap a site's content — the link never changes.</p>
+      <ul class="sites" id="sitesList"></ul>
+      <div class="banner err" id="sitesErr" hidden></div>
     </section>
   </main>
 
@@ -389,8 +444,9 @@
   var API = "https://api.github.com";
   var LS_TOKEN = "rawdev_drop_token";
   var LS_REPO = "rawdev_drop_repo";
+  var LS_HISTORY = "rawdev_drop_history";
 
-  var state = { token: "", login: "", avatar: "", files: [], publishing: false };
+  var state = { token: "", login: "", avatar: "", files: [], publishing: false, editRepo: null, sites: [] };
 
   var $ = function (id) { return document.getElementById(id); };
 
@@ -486,6 +542,7 @@
 
     updateUrlPreview();
     updatePublishEnabled();
+    fetchSites();
   }
 
   function setDisconnected() {
@@ -499,6 +556,8 @@
     chip.innerHTML = '<span class="d"></span> Not connected';
     updateUrlPreview();
     updatePublishEnabled();
+    state.sites = [];
+    renderSites(loadHistory());
   }
 
   function connect() {
@@ -604,8 +663,137 @@
       '\n      </ul></div></body></html>';
   }
 
+  /* ---------------- history + your sites ---------------- */
+  function loadHistory() {
+    try { return JSON.parse(localStorage.getItem(LS_HISTORY) || "[]"); } catch (e) { return []; }
+  }
+  function saveHistory(list) {
+    try { localStorage.setItem(LS_HISTORY, JSON.stringify(list.slice(0, 200))); } catch (e) {}
+  }
+  function upsertHistory(entry) {
+    var list = loadHistory();
+    var i = -1;
+    for (var k = 0; k < list.length; k++) {
+      if (String(list[k].repo || "").toLowerCase() === entry.repo.toLowerCase()) { i = k; break; }
+    }
+    if (i >= 0) { list[i] = Object.assign({}, list[i], entry); } else { list.unshift(entry); }
+    saveHistory(list);
+  }
+  function pagesUrl(owner, repo) {
+    return repo.toLowerCase() === (owner + ".github.io").toLowerCase()
+      ? "https://" + owner + ".github.io/"
+      : "https://" + owner + ".github.io/" + repo + "/";
+  }
+
+  function fetchSites() {
+    var st = $("sitesStatus");
+    if (!state.token || !state.login) { renderSites(loadHistory()); return; }
+    if (st) st.textContent = "Loading…";
+    $("sitesErr").hidden = true;
+    gh("/user/repos?per_page=100&sort=updated&affiliation=owner").then(function (repos) {
+      var remote = (repos || []).filter(function (r) { return r.has_pages; }).map(function (r) {
+        return { repo: r.name, owner: r.owner.login, url: pagesUrl(r.owner.login, r.name), updated_at: r.updated_at };
+      });
+      var map = {};
+      remote.forEach(function (e) { map[e.repo.toLowerCase()] = e; });
+      loadHistory().forEach(function (e) { if (!map[e.repo.toLowerCase()]) map[e.repo.toLowerCase()] = e; });
+      var all = Object.keys(map).map(function (k) { return map[k]; });
+      all.sort(function (a, b) { return String(b.updated_at || "").localeCompare(String(a.updated_at || "")); });
+      state.sites = all;
+      renderSites(all);
+    }).catch(function (e) {
+      renderSites(loadHistory());
+      showErr("sitesErr", "Couldn't load your sites from GitHub (" + (e.message || "error") + "). Showing locally saved ones.");
+    });
+  }
+
+  function renderSites(list) {
+    var ul = $("sitesList");
+    ul.innerHTML = "";
+    var st = $("sitesStatus");
+    if (!list.length) {
+      var empty = document.createElement("li");
+      empty.className = "empty";
+      empty.textContent = state.login
+        ? "No published sites yet — publish one above and it'll appear here."
+        : "Connect GitHub to see all your sites.";
+      ul.appendChild(empty);
+      if (st) st.textContent = "";
+      return;
+    }
+    if (st) st.textContent = list.length + " site" + (list.length === 1 ? "" : "s");
+    list.forEach(function (s) {
+      var li = document.createElement("li");
+      li.className = "site";
+      li.innerHTML =
+        '<span class="sico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a15 15 0 0 1 0 18"/><path d="M12 3a15 15 0 0 0 0 18"/></svg></span>' +
+        '<span class="smeta"><b></b><a></a></span>' +
+        '<span class="sacts">' +
+          '<button class="iconbtn" data-act="copy" title="Copy link" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg></button>' +
+          '<a class="iconbtn" data-act="open" title="Open site" target="_blank" rel="noopener noreferrer"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3h7v7"/><path d="M21 3 10 14"/><path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5"/></svg></a>' +
+          '<button class="iconbtn edit" data-act="edit" title="Edit this site\'s content" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg></button>' +
+        '</span>';
+      li.querySelector(".smeta b").textContent = s.repo;
+      var a = li.querySelector(".smeta a");
+      a.href = s.url;
+      a.textContent = s.url.replace(/^https?:\/\//, "");
+      li.querySelector('[data-act="open"]').href = s.url;
+      li.querySelector('[data-act="copy"]').addEventListener("click", function () { copyText(s.url, "Link copied"); });
+      li.querySelector('[data-act="edit"]').addEventListener("click", function () { startEdit(s.repo); });
+      ul.appendChild(li);
+    });
+  }
+
+  function copyText(text, msg) {
+    var done = function () { toast(msg); };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done).catch(function () { fallbackCopy(text); done(); });
+    } else { fallbackCopy(text); done(); }
+  }
+  function fallbackCopy(text) {
+    var ta = document.createElement("textarea");
+    ta.value = text; ta.style.position = "fixed"; ta.style.top = "-1000px";
+    document.body.appendChild(ta); ta.select();
+    try { document.execCommand("copy"); } catch (e) {}
+    document.body.removeChild(ta);
+  }
+
+  function startEdit(repo) {
+    state.editRepo = repo;
+    $("repoInput").value = repo;
+    $("repoInput").disabled = true;
+    $("editBar").hidden = false;
+    $("editRepoName").textContent = repo;
+    $("step3Title").textContent = "Update site";
+    $("result").hidden = true;
+    $("publishErr").hidden = true;
+    $("step3Status").textContent = "Editing";
+    $("step3Status").className = "status";
+    refreshPublishUI();
+    var card = $("step3");
+    if (card && card.scrollIntoView) card.scrollIntoView({ behavior: "smooth", block: "center" });
+    toast("Editing " + repo + " — drop the new files, then Update");
+  }
+
+  function cancelEdit(silent) {
+    state.editRepo = null;
+    $("repoInput").disabled = false;
+    $("editBar").hidden = true;
+    $("step3Title").textContent = "Publish";
+    refreshPublishUI();
+    if (!silent) toast("Edit cancelled");
+  }
+
+  function refreshPublishUI() {
+    var btn = $("publishBtn");
+    if (state.publishing) return;
+    btn.textContent = state.editRepo ? "Update site →" : "Publish to GitHub →";
+    updatePublishEnabled();
+  }
+
   function publish() {
     if (state.publishing) return;
+    var isEdit = !!state.editRepo;
     var repo = slugify($("repoInput").value);
     if (!repo) { showErr("publishErr", "Give your site a name (letters, numbers, dashes)."); return; }
 
@@ -615,9 +803,8 @@
     logReset();
     updatePublishEnabled();
     var btn = $("publishBtn");
-    var oldLabel = btn.textContent;
-    btn.textContent = "Publishing…";
-    $("step3Status").textContent = "Publishing…";
+    btn.textContent = isEdit ? "Updating…" : "Publishing…";
+    $("step3Status").textContent = isEdit ? "Updating…" : "Publishing…";
     $("step3Status").className = "status";
 
     var owner = state.login;
@@ -690,14 +877,21 @@
       });
     }).then(function () {
       var lf = logStep("All done");
-      lf.done("Published");
+      lf.done(isEdit ? "Updated" : "Published");
       $("resultUrl").value = liveUrl;
       $("openUrlBtn").href = liveUrl;
       $("resultNote").textContent = "Repo: github.com/" + owner + "/" + repo;
+      $("resultTitle").textContent = isEdit ? "✅ Your site is updated" : "🎉 Your site is live";
+      $("resultMsg").textContent = isEdit
+        ? "Your new content is live at the same link — give it a few seconds to refresh."
+        : "GitHub Pages usually takes about a minute to go live the first time. Share this link anywhere.";
       $("result").hidden = false;
-      $("step3Status").textContent = "Live";
+      $("step3Status").textContent = isEdit ? "Updated" : "Live";
       $("step3Status").className = "status ok";
-      toast("Published! Link ready 🎉");
+      upsertHistory({ repo: repo, owner: owner, url: liveUrl, updated_at: new Date().toISOString() });
+      if (isEdit) { cancelEdit(true); }
+      toast(isEdit ? "Updated! Same link 🎉" : "Published! Link ready 🎉");
+      fetchSites();
     }).catch(function (e) {
       var msg = e.message || "Something went wrong.";
       if (e.status === 401) msg = "Your token was rejected — reconnect GitHub above.";
@@ -712,8 +906,7 @@
       $("log").appendChild(li);
     }).then(function () {
       state.publishing = false;
-      btn.textContent = oldLabel;
-      updatePublishEnabled();
+      refreshPublishUI();
     });
   }
 
@@ -759,24 +952,15 @@
       toast("Cleared");
     });
     $("copyUrlBtn").addEventListener("click", function () {
-      var url = $("resultUrl").value;
-      var done = function () { toast("Link copied"); };
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(url).then(done).catch(function () { fallbackCopy(url); done(); });
-      } else { fallbackCopy(url); done(); }
+      copyText($("resultUrl").value, "Link copied");
     });
-
-    function fallbackCopy(text) {
-      var ta = document.createElement("textarea");
-      ta.value = text; ta.style.position = "fixed"; ta.style.top = "-1000px";
-      document.body.appendChild(ta); ta.select();
-      try { document.execCommand("copy"); } catch (e) {}
-      document.body.removeChild(ta);
-    }
+    $("refreshSitesBtn").addEventListener("click", function () { fetchSites(); toast("Refreshing…"); });
+    $("cancelEditBtn").addEventListener("click", function () { cancelEdit(); });
 
     updateUrlPreview();
     updatePublishEnabled();
 
+    renderSites(loadHistory());
     if (saved) {
       state.token = saved;
       gh("/user").then(function (user) { setConnected(user); })
